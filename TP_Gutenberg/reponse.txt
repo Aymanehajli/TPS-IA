@@ -1,0 +1,235 @@
+ETAPE 1 : Chargement et configuration globale
+--------------------------------------------
+
+Question possible :
+- Pourquoi fixe-t-on une graine aléatoire (SEED) et quels hyperparamètres sont utilisés ?
+
+Réponse possible :
+- On fixe une graine (SEED = 42) pour rendre les expériences reproductibles : même données, même modèle, mêmes résultats.
+- Les hyperparamètres (SEQ_LEN, BATCH_SIZE, EMBED_DIM, LSTM_UNITS, EPOCHS, LEARNING_RATE, VALIDATION_SPLIT) contrôlent la taille des séquences, la taille des batchs, la capacité du modèle, le nombre d’époques et la proportion de données de validation.
+
+Améliorations futures :
+- Ajouter un fichier de configuration (YAML/JSON) pour modifier les hyperparamètres sans changer le code.
+- Permettre de passer certains hyperparamètres en ligne de commande (par ex. avec argparse).
+
+Fonctions concernées :
+- Partie globale du fichier (définition des constantes) : prépare l’environnement expérimental et garantit la reproductibilité, ce qui est essentiel pour comparer des modèles.
+
+
+ETAPE 2 : Téléchargement du corpus Gutenberg
+-------------------------------------------
+
+Question possible :
+- Comment récupère-t-on automatiquement le texte de Shakespeare si le fichier n’existe pas encore ?
+
+Réponse possible :
+- La fonction `download_gutenberg(url, path)` vérifie si le fichier `shakespeare.txt` existe déjà.
+- Si le fichier n’existe pas, elle télécharge le corpus depuis Project Gutenberg avec `urllib.request.urlretrieve`.
+
+Améliorations futures :
+- Gérer les erreurs réseau (timeout, absence de connexion, URL invalide).
+- Vérifier l’intégrité du fichier téléchargé (taille minimale, hash, etc.).
+- Rendre l’URL configurable pour pouvoir changer de corpus facilement.
+
+Fonction : download_gutenberg
+- Fait quoi ?
+  - Télécharge le corpus texte depuis Internet uniquement si le fichier n’est pas déjà présent en local.
+- Pourquoi on l’a choisie ?
+  - Pour automatiser la préparation des données et éviter de télécharger manuellement le fichier, tout en évitant les téléchargements redondants.
+
+
+ETAPE 3 : Nettoyage du texte brut
+---------------------------------
+
+Question possible :
+- Comment isole-t-on le texte utile de Shakespeare et enlève-t-on les parties techniques du fichier Gutenberg ?
+
+Réponse possible :
+- La fonction `clean_gutenberg_text(text)` cherche les marqueurs standard `*** START OF THE PROJECT GUTENBERG EBOOK` et `*** END OF THE PROJECT GUTENBERG EBOOK`.
+- Elle garde seulement la partie située entre ces marqueurs puis effectue un nettoyage léger (remplacement des retours chariot, normalisation des espaces).
+
+Améliorations futures :
+- Gérer des variations possibles dans les marqueurs (certains ebooks n’ont pas exactement les mêmes entêtes).
+- Ajouter des options de nettoyage supplémentaires (supprimer les notes de bas de page, les métadonnées restantes, etc.).
+- Implémenter un petit rapport de nettoyage (nombre de caractères avant/après).
+
+Fonction : clean_gutenberg_text
+- Fait quoi ?
+  - Supprime les entêtes/pieds spécifiques à Project Gutenberg et normalise légèrement le texte (retours à la ligne et espaces).
+- Pourquoi on l’a choisie ?
+  - Pour se concentrer sur le texte littéraire réellement utile pour l’apprentissage du modèle, et éviter que des métadonnées polluent la distribution des caractères.
+
+
+ETAPE 4 : Construction du dataset caractère par caractère (avec split correct)
+-----------------------------------------------------------------------------
+
+Question possible :
+- Comment transforme-t-on le texte en séquences de caractères utilisables par un LSTM, tout en évitant le data leakage entre train et validation ?
+
+Réponse possible :
+- La fonction `build_char_dataset_correct(text, validation_split)` construit d’abord un vocabulaire de caractères (`vocab`), puis deux dictionnaires `char2idx` et `idx2char`.
+- Le texte est converti en entiers, puis séparé en deux parties (train et validation) AVANT la création des séquences, ce qui empêche que des séquences de validation chevauchent des séquences d’entraînement.
+- Chaque dataset est ensuite découpé en séquences de longueur `SEQ_LEN + 1`, puis transformé en paires (entrée, cible) : entrée = tous les caractères sauf le dernier, cible = tous les caractères sauf le premier.
+- Le dataset est batché, éventuellement mélangé, et préfetché pour optimiser la performance.
+
+Améliorations futures :
+- Rendre la stratégie de découpage paramétrable (séquences qui se chevauchent, fenêtres glissantes, etc.).
+- Ajouter une option pour travailler au niveau des mots au lieu des caractères.
+- Ajouter une classe de dataset personnalisée qui pourrait être réutilisée sur d’autres corpus.
+
+Fonction : build_char_dataset_correct
+- Fait quoi ?
+  - Crée les datasets d’entraînement et de validation au niveau caractère, avec un split correct pour éviter les fuites de données.
+- Pourquoi on l’a choisie ?
+  - Pour obtenir une estimation réaliste de la performance du modèle en validation, en s’assurant que les données de validation ne recoupent pas celles d’entraînement.
+
+
+ETAPE 5 : Définition du modèle LSTM réaliste
+--------------------------------------------
+
+Question possible :
+- Quelle architecture de réseau utilise-t-on pour générer du texte, et pourquoi cette architecture particulière ?
+
+Réponse possible :
+- La fonction `build_realistic_model(vocab_size)` crée un modèle `tf.keras.Sequential` composé :
+  - d’une couche `Embedding` pour représenter les indices de caractères dans un espace vectoriel dense,
+  - de deux couches `LSTM` (la première avec `LSTM_UNITS`, la seconde avec `LSTM_UNITS // 2`) avec dropout et recurrent_dropout pour limiter l’overfitting,
+  - de couches `LayerNormalization` pour stabiliser l’apprentissage,
+  - et d’une couche `Dense` finale qui prédit la distribution sur le vocabulaire de caractères à chaque pas de temps.
+- Le modèle est compilé avec l’optimiseur Adam, une loss `SparseCategoricalCrossentropy(from_logits=True)` et l’accuracy comme métrique.
+
+Améliorations futures :
+- Tester d’autres architectures (GRU, Transformer, LSTM bidirectionnel au premier niveau, etc.).
+- Ajouter de la régularisation L2 sur les poids ou du dropout supplémentaire.
+- Rendre la profondeur du réseau et le nombre d’unités configurables.
+
+Fonction : build_realistic_model
+- Fait quoi ?
+  - Définit et compile un réseau LSTM adapté à la génération de texte caractère par caractère, avec une architecture équilibrée pour viser une accuracy réaliste (~70%).
+- Pourquoi on l’a choisie ?
+  - LSTM est bien adapté aux séquences de texte, et cette architecture à deux couches avec régularisation permet un bon compromis entre capacité de modélisation et limitation de l’overfitting.
+
+
+ETAPE 6 : Visualisation de l’entraînement
+----------------------------------------
+
+Question possible :
+- Comment évalue-t-on visuellement la qualité de l’entraînement du modèle (loss, accuracy, perplexité, overfitting) ?
+
+Réponse possible :
+- La fonction `plot_training_history(history)` crée une figure avec 4 sous-graphiques :
+  - l’évolution de la loss (train/validation),
+  - l’évolution de l’accuracy (train/validation) avec une ligne d’objectif à 70%,
+  - la perplexité (exponentielle de la loss),
+  - le gap entre la loss de validation et la loss d’entraînement pour visualiser l’overfitting.
+- Les graphiques sont sauvegardés dans un fichier image (`training_plots.png`).
+
+Améliorations futures :
+- Ajouter des barres d’erreur ou des intervalles de confiance si on fait plusieurs runs.
+- Enregistrer également les courbes au format CSV pour un post-traitement.
+- Intégrer TensorBoard pour un suivi plus interactif.
+
+Fonction : plot_training_history
+- Fait quoi ?
+  - Génère et sauvegarde des graphiques détaillés sur l’apprentissage du modèle (loss, accuracy, perplexité, overfitting).
+- Pourquoi on l’a choisie ?
+  - La visualisation permet de diagnostiquer rapidement les problèmes d’overfitting, de sous-apprentissage ou de choix d’hyperparamètres non adaptés.
+
+
+ETAPE 7 : Génération de texte
+-----------------------------
+
+Question possible :
+- Comment le modèle génère-t-il du texte à partir d’une phrase de départ et comment contrôle-t-on la créativité ?
+
+Réponse possible :
+- La fonction `generate_text(model, start_string, char2idx, idx2char, num_generate, temperature)` :
+  - convertit la phrase de départ en indices d’après `char2idx`,
+  - passe ces indices au modèle pour obtenir une distribution de probabilité sur le prochain caractère,
+  - divise les logits par la température (plus la température est élevée, plus la génération est créative/chaotique),
+  - échantillonne un caractère suivant cette distribution (avec `tf.random.categorical`),
+  - ajoute ce caractère à la séquence et recommence jusqu’à atteindre `num_generate` caractères.
+
+Améliorations futures :
+- Ajouter une option pour générer jusqu’à un token de fin de séquence (si on travaille au niveau mot).
+- Expérimenter avec des stratégies de sampling plus avancées (top-k, nucleus sampling).
+- Ajouter une contrainte pour éviter les répétitions excessives.
+
+Fonction : generate_text
+- Fait quoi ?
+  - Génère un texte de longueur donnée à partir d’une graine, en échantillonnant caractère par caractère dans la distribution de sortie du modèle.
+- Pourquoi on l’a choisie ?
+  - C’est la manière standard d’utiliser un modèle de langage autoregressif : chaque nouveau caractère dépend des caractères précédents et de la distribution prédite.
+
+
+ETAPE 8 : Tests de qualité du modèle
+------------------------------------
+
+Question possible :
+- Comment évaluer la qualité et la diversité des textes générés par le modèle, au-delà des métriques numériques ?
+
+Réponse possible :
+- La fonction `test_model_quality(model, char2idx, idx2char)` réalise plusieurs types de tests :
+  - Génération de texte à partir de plusieurs graines différentes (citations de style Shakespeare) et avec plusieurs valeurs de température (0.3, 0.7, 1.0).
+  - Test de cohérence stylistique avec des débuts de phrases typiques de Shakespeare.
+  - Analyse de la diversité en générant plusieurs fois avec la même graine et en mesurant combien de générations sont uniques (score de diversité).
+
+Améliorations futures :
+- Ajouter un scoring automatique (par ex. perplexité sur un jeu de test séparé).
+- Intégrer des métriques linguistiques (longueur moyenne des phrases, richesse lexicale).
+- Comparer les textes générés à des textes de référence avec des mesures de similarité.
+
+Fonction : test_model_quality
+- Fait quoi ?
+  - Lance une batterie de tests de génération pour juger qualitativement et quantitativement la cohérence et la diversité du modèle.
+- Pourquoi on l’a choisie ?
+  - Les métriques numériques ne suffisent pas : il est nécessaire d’observer les textes produits pour juger de la qualité réelle du modèle de langue.
+
+
+ETAPE 9 : Fonction principale et orchestration (main)
+-----------------------------------------------------
+
+Question possible :
+- Comment se déroule le pipeline complet : depuis le téléchargement des données jusqu’à la sauvegarde du modèle et aux tests finaux ?
+
+Réponse possible :
+- La fonction `main()` enchaîne toutes les étapes :
+  1. Affiche des informations d’introduction.
+  2. Télécharge les données si nécessaire (`download_gutenberg`).
+  3. Charge le texte brut et le nettoie (`clean_gutenberg_text`).
+  4. Construit les datasets d’entraînement et de validation (`build_char_dataset_correct`).
+  5. Construit le modèle (`build_realistic_model`) et affiche son résumé.
+  6. Configure les callbacks (EarlyStopping, ReduceLROnPlateau, ModelCheckpoint) pour avoir un entraînement réaliste et stable.
+  7. Lance l’entraînement (`model.fit`) et mesure le temps total.
+  8. Produit les visualisations (`plot_training_history`).
+  9. Calcule et affiche les métriques finales (accuracy, loss, gap, perplexité) et interprète le niveau de performance (réaliste, trop élevé, insuffisant).
+  10. Lance les tests de qualité de génération (`test_model_quality`).
+  11. Sauvegarde le modèle final et le meilleur modèle (`model.save`, `ModelCheckpoint`).
+
+Améliorations futures :
+- Permettre d’exécuter seulement certaines parties du pipeline (par exemple, un mode “analyse sans réentraînement”).
+- Ajouter une gestion d’arguments en ligne de commande pour contrôler facilement le nombre d’époques, l’activation ou non des tests, etc.
+- Logguer toutes les informations dans des fichiers (logs texte, JSON, etc.) pour faciliter l’analyse a posteriori.
+
+Fonction : main
+- Fait quoi ?
+  - Coordonne l’ensemble du projet : préparation des données, définition du modèle, entraînement, visualisation, évaluation et sauvegarde.
+- Pourquoi on l’a choisie ?
+  - Avoir une fonction principale claire facilite l’exécution du script et la compréhension du flux général, ce qui est important pour le debug et pour l’extension du projet.
+
+
+IDÉES GÉNÉRALES D’AMÉLIORATION POUR L’AVENIR
+-------------------------------------------
+
+- Modularisation :
+  - Séparer le code en plusieurs fichiers (par ex. `data.py`, `model.py`, `train.py`, `eval.py`) pour une meilleure maintenabilité.
+
+- Expérimentation automatique :
+  - Intégrer un système d’expérimentation (par ex. WandB, MLflow) pour suivre automatiquement les runs, les hyperparamètres et les résultats.
+
+- Généralisation à d’autres corpus :
+  - Paramétrer facilement la source de données pour entraîner le même pipeline sur d’autres auteurs ou d’autres langues.
+
+- Optimisations de performance :
+  - Utiliser éventuellement un GPU/TPU, ajuster les tailles de batchs, et optimiser les `tf.data.Dataset` pour des corpus plus grands.
+
